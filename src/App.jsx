@@ -221,14 +221,16 @@ function parseFacturacionData(rawData) {
 }
 
 export default function App() {
-  const [step, setStep] = useState("upload"); // upload, preview, syncing, done
+  const [step, setStep] = useState("upload"); // upload, preview, checking, select, syncing, done
   const [parsedRows, setParsedRows] = useState([]);
+  const [newRows, setNewRows] = useState([]); // rows not in sheet yet
+  const [selectedFolios, setSelectedFolios] = useState(new Set()); // folios user wants to sync
+  const [existingCount, setExistingCount] = useState(0);
   const [fileName, setFileName] = useState("");
   const [error, setError] = useState(null);
   const [syncResult, setSyncResult] = useState(null);
   const [dragOver, setDragOver] = useState(false);
   const fileRef = useRef(null);
-
   const [loading, setLoading] = useState(false);
 
   const handleFile = useCallback(async (file) => {
@@ -240,9 +242,7 @@ export default function App() {
     try {
       const rawData = await parseXLSFile(file);
       if (!rawData || rawData.length === 0) throw new Error("El archivo está vacío o no se pudo leer");
-      // Debug: log raw rows to browser console
       console.log("Raw data rows:", rawData.length);
-      rawData.slice(0, 25).forEach((r, i) => console.log(`Row ${i}:`, JSON.stringify(r)));
       const rows = parseFacturacionData(rawData);
       console.log("Parsed rows:", rows.length, "Types:", [...new Set(rows.map(r => r.documento))]);
       if (rows.length === 0) throw new Error("No se encontraron facturas válidas en el archivo");
@@ -262,7 +262,39 @@ export default function App() {
     if (file) handleFile(file);
   }, [handleFile]);
 
+  // Step 2: Check which rows are new (not in Google Sheet)
+  const handleCheckNew = async () => {
+    setStep("checking");
+    setError(null);
+    try {
+      const response = await fetch("/api/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rows: parsedRows.map(r => r.sheetRow), mode: "check" }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Error al verificar");
+
+      const existingFolios = new Set(result.existingFolios || []);
+      const filtered = parsedRows.filter(r => !existingFolios.has(String(r.folio)));
+      setNewRows(filtered);
+      setExistingCount(parsedRows.length - filtered.length);
+      // Select all by default
+      setSelectedFolios(new Set(filtered.map(r => r.folio)));
+      setStep("select");
+    } catch (err) {
+      setError(err.message);
+      setStep("preview");
+    }
+  };
+
+  // Step 3: Sync only selected rows
   const handleSync = async () => {
+    const rowsToSync = newRows.filter(r => selectedFolios.has(r.folio));
+    if (rowsToSync.length === 0) {
+      setError("No hay facturas seleccionadas para sincronizar");
+      return;
+    }
     setStep("syncing");
     setError(null);
 
@@ -270,25 +302,40 @@ export default function App() {
       const response = await fetch("/api/sync", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          rows: parsedRows.map(r => r.sheetRow),
-        }),
+        body: JSON.stringify({ rows: rowsToSync.map(r => r.sheetRow), mode: "write" }),
       });
-
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "Error al sincronizar");
-
-      setSyncResult(result);
+      setSyncResult({ ...result, skippedByUser: newRows.length - rowsToSync.length });
       setStep("done");
     } catch (err) {
       setError(err.message);
-      setStep("preview");
+      setStep("select");
+    }
+  };
+
+  const toggleFolio = (folio) => {
+    setSelectedFolios(prev => {
+      const next = new Set(prev);
+      if (next.has(folio)) next.delete(folio);
+      else next.add(folio);
+      return next;
+    });
+  };
+
+  const toggleAll = () => {
+    if (selectedFolios.size === newRows.length) {
+      setSelectedFolios(new Set());
+    } else {
+      setSelectedFolios(new Set(newRows.map(r => r.folio)));
     }
   };
 
   const reset = () => {
     setStep("upload");
     setParsedRows([]);
+    setNewRows([]);
+    setSelectedFolios(new Set());
     setFileName("");
     setError(null);
     setSyncResult(null);
@@ -297,6 +344,7 @@ export default function App() {
   const totalNeto = parsedRows.reduce((s, r) => s + r.neto, 0);
   const facturas = parsedRows.filter(r => !r.documento.includes("NOTA DE CREDITO"));
   const notasCredito = parsedRows.filter(r => r.documento.includes("NOTA DE CREDITO"));
+  const selectedNeto = newRows.filter(r => selectedFolios.has(r.folio)).reduce((s, r) => s + r.neto, 0);
 
   return (
     <div style={{ fontFamily: "'Manrope',system-ui,sans-serif", background: C.bg, minHeight: "100vh", color: C.text, display: "flex", flexDirection: "column", alignItems: "center", padding: "24px 16px" }}>
@@ -425,9 +473,108 @@ export default function App() {
             <button onClick={reset} style={{ padding: "12px 24px", borderRadius: 12, border: `1px solid ${C.border}`, background: C.bgAlt, color: C.sub, cursor: "pointer", fontSize: 14, fontWeight: 700 }}>
               ← Cancelar
             </button>
-            <button onClick={handleSync} style={{ padding: "12px 32px", borderRadius: 12, border: "none", background: `linear-gradient(135deg,${C.green},${C.cyan})`, color: "#fff", cursor: "pointer", fontSize: 14, fontWeight: 800, boxShadow: `0 8px 24px ${C.green}40` }}>
-              Sincronizar con Google Sheets →
+            <button onClick={handleCheckNew} style={{ padding: "12px 32px", borderRadius: 12, border: "none", background: `linear-gradient(135deg,${C.green},${C.cyan})`, color: "#fff", cursor: "pointer", fontSize: 14, fontWeight: 800, boxShadow: `0 8px 24px ${C.green}40` }}>
+              Verificar nuevas facturas →
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* STEP: Checking */}
+      {step === "checking" && (
+        <div style={{ textAlign: "center", padding: 40 }}>
+          <div style={{ width: 48, height: 48, border: `3px solid ${C.border}`, borderTopColor: C.green, borderRadius: "50%", animation: "spin .8s linear infinite", margin: "0 auto 20px" }} />
+          <div style={{ color: C.sub, fontSize: 15, fontWeight: 600 }}>Verificando con Google Sheets...</div>
+          <div style={{ color: C.dim, fontSize: 12, marginTop: 8 }}>Comparando folios existentes</div>
+          <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+        </div>
+      )}
+
+      {/* STEP: Select which rows to sync */}
+      {step === "select" && (
+        <div style={{ maxWidth: 900, width: "100%" }}>
+          {/* Summary */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12, marginBottom: 20 }}>
+            <div style={{ background: C.bgCard, borderRadius: 14, padding: "16px 18px", border: `1px solid ${C.border}` }}>
+              <div style={{ fontSize: 11, color: C.dim, fontWeight: 700, textTransform: "uppercase", marginBottom: 4 }}>En el archivo</div>
+              <div style={{ fontSize: 22, fontWeight: 800, color: C.text }}>{parsedRows.length}</div>
+            </div>
+            <div style={{ background: C.bgCard, borderRadius: 14, padding: "16px 18px", border: `1px solid ${C.border}` }}>
+              <div style={{ fontSize: 11, color: C.dim, fontWeight: 700, textTransform: "uppercase", marginBottom: 4 }}>Ya en la hoja</div>
+              <div style={{ fontSize: 22, fontWeight: 800, color: C.amber }}>{existingCount}</div>
+            </div>
+            <div style={{ background: C.bgCard, borderRadius: 14, padding: "16px 18px", border: `1px solid ${C.border}` }}>
+              <div style={{ fontSize: 11, color: C.dim, fontWeight: 700, textTransform: "uppercase", marginBottom: 4 }}>Nuevas</div>
+              <div style={{ fontSize: 22, fontWeight: 800, color: C.green }}>{newRows.length}</div>
+            </div>
+            <div style={{ background: C.bgCard, borderRadius: 14, padding: "16px 18px", border: `1px solid ${C.border}` }}>
+              <div style={{ fontSize: 11, color: C.dim, fontWeight: 700, textTransform: "uppercase", marginBottom: 4 }}>Seleccionadas</div>
+              <div style={{ fontSize: 22, fontWeight: 800, color: C.cyan }}>{selectedFolios.size}</div>
+            </div>
+            <div style={{ background: C.bgCard, borderRadius: 14, padding: "16px 18px", border: `1px solid ${C.border}` }}>
+              <div style={{ fontSize: 11, color: C.dim, fontWeight: 700, textTransform: "uppercase", marginBottom: 4 }}>Neto seleccionado</div>
+              <div style={{ fontSize: 18, fontWeight: 800, color: selectedNeto >= 0 ? C.green : C.red }}>{fmtF(selectedNeto)}</div>
+            </div>
+          </div>
+
+          {newRows.length === 0 ? (
+            <div style={{ background: C.bgCard, borderRadius: 14, padding: 40, border: `1px solid ${C.border}`, textAlign: "center", marginBottom: 20 }}>
+              <div style={{ fontSize: 48, marginBottom: 16 }}>✅</div>
+              <h3 style={{ fontSize: 18, fontWeight: 800, marginBottom: 8 }}>Todo al día</h3>
+              <p style={{ color: C.sub, fontSize: 14 }}>Todas las facturas del archivo ya están en tu Google Sheet.</p>
+            </div>
+          ) : (
+            <div style={{ background: C.bgCard, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "hidden", marginBottom: 20 }}>
+              <div style={{ padding: "14px 18px", borderBottom: `1px solid ${C.border}`, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+                <h3 style={{ fontSize: 14, fontWeight: 700 }}>Facturas nuevas — selecciona las que quieres agregar</h3>
+                <button onClick={toggleAll} style={{ padding: "6px 14px", borderRadius: 8, border: `1px solid ${C.border}`, background: C.bgAlt, color: C.sub, cursor: "pointer", fontSize: 12, fontWeight: 700 }}>
+                  {selectedFolios.size === newRows.length ? "Deseleccionar todas" : "Seleccionar todas"}
+                </button>
+              </div>
+              <div style={{ overflowX: "auto", maxHeight: 450 }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                  <thead style={{ position: "sticky", top: 0, zIndex: 2 }}>
+                    <tr>
+                      <th style={{ padding: "8px 10px", width: 40, textAlign: "center", background: C.bgCard, borderBottom: `2px solid ${C.border}` }}>
+                        <input type="checkbox" checked={selectedFolios.size === newRows.length && newRows.length > 0} onChange={toggleAll} style={{ cursor: "pointer", width: 16, height: 16, accentColor: C.green }} />
+                      </th>
+                      {["Tipo", "Folio", "Fecha", "Razón Social", "Neto"].map(h => (
+                        <th key={h} style={{ padding: "8px 10px", textAlign: h === "Neto" ? "right" : "left", color: C.dim, fontWeight: 700, borderBottom: `2px solid ${C.border}`, fontSize: 10, textTransform: "uppercase", background: C.bgCard, whiteSpace: "nowrap" }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {newRows.map((r, i) => {
+                      const isSelected = selectedFolios.has(r.folio);
+                      return (
+                        <tr key={r.folio} onClick={() => toggleFolio(r.folio)} style={{ background: isSelected ? (i % 2 ? C.bgAlt : "transparent") : `${C.red}08`, cursor: "pointer", opacity: isSelected ? 1 : 0.5, transition: "all 0.15s" }}>
+                          <td style={{ padding: "7px 10px", textAlign: "center" }}>
+                            <input type="checkbox" checked={isSelected} onChange={() => toggleFolio(r.folio)} style={{ cursor: "pointer", width: 16, height: 16, accentColor: C.green }} />
+                          </td>
+                          <td style={{ padding: "7px 10px", color: C.dim, fontSize: 11 }}>{r.documento}</td>
+                          <td style={{ padding: "7px 10px", color: C.blueGlow, fontWeight: 700, fontFamily: "monospace" }}>{r.folio}</td>
+                          <td style={{ padding: "7px 10px", color: C.sub }}>{r.fecha}</td>
+                          <td style={{ padding: "7px 10px", color: C.text, maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.cliente}</td>
+                          <td style={{ padding: "7px 10px", textAlign: "right", color: r.neto >= 0 ? C.text : C.red, fontWeight: 700 }}>{fmtF(r.neto)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* Action buttons */}
+          <div style={{ display: "flex", gap: 12, justifyContent: "center" }}>
+            <button onClick={reset} style={{ padding: "12px 24px", borderRadius: 12, border: `1px solid ${C.border}`, background: C.bgAlt, color: C.sub, cursor: "pointer", fontSize: 14, fontWeight: 700 }}>
+              ← Cancelar
+            </button>
+            {newRows.length > 0 && (
+              <button onClick={handleSync} disabled={selectedFolios.size === 0} style={{ padding: "12px 32px", borderRadius: 12, border: "none", background: selectedFolios.size > 0 ? `linear-gradient(135deg,${C.green},${C.cyan})` : C.bgAlt, color: selectedFolios.size > 0 ? "#fff" : C.dim, cursor: selectedFolios.size > 0 ? "pointer" : "default", fontSize: 14, fontWeight: 800, boxShadow: selectedFolios.size > 0 ? `0 8px 24px ${C.green}40` : "none" }}>
+                Sincronizar {selectedFolios.size} facturas →
+              </button>
+            )}
           </div>
         </div>
       )}
