@@ -102,16 +102,24 @@ function parseFacturacionData(rawData) {
     if (!row || !Array.isArray(row) || row.length < 1) continue;
 
     // Check if this row is a document type section header
-    // In facturacion.cl exports, the doc type appears as a single cell in the first column
-    const firstCell = String(safeGet(row, 0)).toUpperCase().trim();
-    const matchedType = DOC_TYPES.find(dt => firstCell === dt || firstCell.includes(dt));
-    if (matchedType) {
-      currentDocType = matchedType;
-      continue;
+    // In facturacion.cl exports, the doc type can appear in any cell
+    // Check ALL cells in the row for a document type match
+    let isDocTypeRow = false;
+    for (let c = 0; c < Math.min(row.length, 10); c++) {
+      const cellVal = String(row[c] ?? "").toUpperCase().trim();
+      if (!cellVal) continue;
+      const matchedType = DOC_TYPES.find(dt => cellVal === dt || cellVal.includes(dt));
+      if (matchedType) {
+        currentDocType = matchedType;
+        isDocTypeRow = true;
+        break;
+      }
     }
+    if (isDocTypeRow) continue;
 
-    // Skip total/summary rows
-    if (firstCell.includes("TOTAL") || firstCell.includes("SUBTOTAL")) continue;
+    // Skip total/summary rows - check all cells
+    const allCellsText = row.map(c => String(c ?? "").toUpperCase().trim()).join(" ");
+    if (allCellsText.includes("TOTAL") || allCellsText.includes("SUBTOTAL")) continue;
 
     const folio = String(safeGet(row, folioIdx)).trim();
     if (!folio || folio === "" || isNaN(parseInt(folio))) continue;
@@ -212,7 +220,11 @@ export default function App() {
     try {
       const rawData = await parseXLSFile(file);
       if (!rawData || rawData.length === 0) throw new Error("El archivo está vacío o no se pudo leer");
+      // Debug: log raw rows to browser console
+      console.log("Raw data rows:", rawData.length);
+      rawData.slice(0, 25).forEach((r, i) => console.log(`Row ${i}:`, JSON.stringify(r)));
       const rows = parseFacturacionData(rawData);
+      console.log("Parsed rows:", rows.length, "Types:", [...new Set(rows.map(r => r.documento))]);
       if (rows.length === 0) throw new Error("No se encontraron facturas válidas en el archivo");
       setParsedRows(rows);
       setStep("preview");
