@@ -84,13 +84,37 @@ function parseFacturacionData(rawData) {
   if (clienteIdx === -1) throw new Error("No se encontró la columna RAZÓN SOCIAL / CLIENTE");
   if (netoIdx === -1) throw new Error("No se encontró la columna NETO");
 
+  // Known document type section headers in facturacion.cl exports
+  const DOC_TYPES = [
+    "FACTURA ELECTRONICA",
+    "FACTURA NO AFECTA O EXENTA ELECTRONICA", 
+    "NOTA DE CREDITO ELECTRONICA",
+    "NOTA DE DEBITO ELECTRONICA",
+    "LIQUIDACION FACTURA ELECTRONICA",
+    "GUIA DE DESPACHO ELECTRONICA",
+  ];
+
   const rows = [];
+  let currentDocType = "FACTURA ELECTRONICA"; // default
+
   for (let i = headerIdx + 1; i < rawData.length; i++) {
     const row = rawData[i];
-    if (!row || !Array.isArray(row) || row.length < 2) continue;
+    if (!row || !Array.isArray(row) || row.length < 1) continue;
+
+    // Check if this row is a document type section header
+    // In facturacion.cl exports, the doc type appears as a single cell in the first column
+    const firstCell = String(safeGet(row, 0)).toUpperCase().trim();
+    const matchedType = DOC_TYPES.find(dt => firstCell === dt || firstCell.includes(dt));
+    if (matchedType) {
+      currentDocType = matchedType;
+      continue;
+    }
+
+    // Skip total/summary rows
+    if (firstCell.includes("TOTAL") || firstCell.includes("SUBTOTAL")) continue;
 
     const folio = String(safeGet(row, folioIdx)).trim();
-    if (!folio || folio === "TOTAL" || folio.includes("TOTAL GENERAL") || folio === "" || isNaN(parseInt(folio))) continue;
+    if (!folio || folio === "" || isNaN(parseInt(folio))) continue;
 
     const cliente = String(safeGet(row, clienteIdx)).trim();
     if (!cliente) continue;
@@ -142,14 +166,10 @@ function parseFacturacionData(rawData) {
       if (rutVal) rut = String(rutVal).trim();
     }
 
-    let documento = "FACTURA ELECTRONICA";
-    if (docIdx >= 0) {
-      const docVal = safeGet(row, docIdx);
-      if (docVal) documento = String(docVal).toUpperCase().trim();
-    }
-    // If no document type column found, try to infer from folio range or neto sign
-    if (!documento || documento === "") {
-      documento = neto < 0 ? "NOTA DE CREDITO ELECTRONICA" : "FACTURA ELECTRONICA";
+    let documento = currentDocType;
+    // For notas de credito, ensure neto is negative
+    if (documento.includes("NOTA DE CREDITO") && neto > 0) {
+      neto = -neto;
     }
 
     // Format neto for Google Sheets (Chilean format with dots)
