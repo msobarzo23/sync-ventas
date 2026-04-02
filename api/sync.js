@@ -22,7 +22,7 @@ export default async function handler(req, res) {
 
   try {
     const { rows, mode } = req.body;
-    if (!rows || !Array.length) {
+    if (!rows || !rows.length) {
       return res.status(400).json({ error: 'No rows provided' });
     }
 
@@ -35,48 +35,41 @@ export default async function handler(req, res) {
       range: `${SHEET_NAME}!B:B`,
     });
 
-    const existingFolios = new Set();
+    const existingFolios = [];
     if (existing.data.values) {
       existing.data.values.forEach(row => {
         const val = String(row[0] || '').trim();
-        if (val && val !== 'FOLIO') existingFolios.add(val);
+        if (val && val !== 'FOLIO') existingFolios.push(val);
       });
     }
 
-    // Filter new rows (folio not in existing)
-    const newRows = rows.filter(row => {
-      const folio = String(row[1] || '').trim();
-      return folio && !existingFolios.has(folio);
-    });
-
-    if (newRows.length === 0) {
+    // CHECK MODE: just return which folios already exist
+    if (mode === 'check') {
       return res.status(200).json({
         success: true,
-        message: 'No hay facturas nuevas para agregar',
-        added: 0,
-        duplicates: rows.length,
-        totalExisting: existingFolios.size,
+        existingFolios: existingFolios,
+        totalExisting: existingFolios.length,
       });
     }
 
-    // Append new rows
+    // WRITE MODE: append all provided rows directly (no filtering, frontend already filtered)
+    if (rows.length === 0) {
+      return res.status(200).json({ success: true, message: 'No hay facturas para agregar', added: 0 });
+    }
+
     await sheets.spreadsheets.values.append({
       spreadsheetId: SPREADSHEET_ID,
       range: `${SHEET_NAME}!A:F`,
       valueInputOption: 'USER_ENTERED',
       insertDataOption: 'INSERT_ROWS',
-      requestBody: {
-        values: newRows,
-      },
+      requestBody: { values: rows },
     });
 
     return res.status(200).json({
       success: true,
-      message: `Se agregaron ${newRows.length} facturas nuevas`,
-      added: newRows.length,
-      duplicates: rows.length - newRows.length,
-      totalExisting: existingFolios.size,
-      newFolios: newRows.map(r => r[1]),
+      message: `Se agregaron ${rows.length} facturas`,
+      added: rows.length,
+      newFolios: rows.map(r => r[1]),
     });
 
   } catch (error) {
