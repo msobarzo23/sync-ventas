@@ -36,49 +36,56 @@ function parseXLSFile(file) {
 }
 
 function findHeaderRow(data) {
-  for (let i = 0; i < Math.min(data.length, 20); i++) {
-    const row = (data[i] || []).map(c => String(c || "").toUpperCase().trim());
-    if (row.some(c => c === "FOLIO" || c.includes("FOLIO")) &&
-        row.some(c => c.includes("RAZON") || c.includes("RAZÓN") || c.includes("CLIENTE"))) {
-      return i;
-    }
+  for (let i = 0; i < Math.min(data.length, 30); i++) {
+    const row = data[i];
+    if (!row || !Array.isArray(row)) continue;
+    const cells = row.map(c => String(c ?? "").toUpperCase().trim());
+    const hasfolio = cells.some(c => c === "FOLIO");
+    const hasCliente = cells.some(c => c.includes("RAZON") || c.includes("RAZÓN") || c.includes("CLIENTE"));
+    if (hasfolio && hasCliente) return i;
   }
   return -1;
 }
 
+function safeGet(row, idx) {
+  if (idx < 0 || !row || idx >= row.length) return "";
+  return row[idx] ?? "";
+}
+
 function parseFacturacionData(rawData) {
   const headerIdx = findHeaderRow(rawData);
-  if (headerIdx === -1) throw new Error("No se encontraron las columnas FOLIO y RAZON SOCIAL en el archivo");
+  if (headerIdx === -1) throw new Error("No se encontraron las columnas FOLIO y RAZÓN SOCIAL en el archivo. Asegúrate de subir el Excel del Libro de Ventas de facturacion.cl");
 
-  const headers = rawData[headerIdx].map(h => String(h || "").toUpperCase().trim());
+  const headerRow = rawData[headerIdx] || [];
+  const headers = headerRow.map(h => String(h ?? "").toUpperCase().trim());
 
   // Find column indices
   const folioIdx = headers.findIndex(h => h === "FOLIO");
   const fechaIdx = headers.findIndex(h => h.includes("FECHA") || h.includes("EMISI"));
-  const rutIdx = headers.findIndex(h => h === "RUT" || h === "R.U.T" || h.includes("R.U.T"));
+  const rutIdx = headers.findIndex(h => h === "RUT" || h.includes("R.U.T"));
   const clienteIdx = headers.findIndex(h => h.includes("RAZON") || h.includes("RAZÓN") || h.includes("CLIENTE"));
   const netoIdx = headers.findIndex(h => h === "NETO");
   const docIdx = headers.findIndex(h => h.includes("DOCUMENTO") || h.includes("TIPO"));
 
   if (folioIdx === -1) throw new Error("No se encontró la columna FOLIO");
-  if (clienteIdx === -1) throw new Error("No se encontró la columna RAZON SOCIAL / CLIENTE");
+  if (clienteIdx === -1) throw new Error("No se encontró la columna RAZÓN SOCIAL / CLIENTE");
   if (netoIdx === -1) throw new Error("No se encontró la columna NETO");
 
   const rows = [];
   for (let i = headerIdx + 1; i < rawData.length; i++) {
     const row = rawData[i];
-    if (!row || row.length < 3) continue;
+    if (!row || !Array.isArray(row) || row.length < 2) continue;
 
-    const folio = String(row[folioIdx] || "").trim();
-    if (!folio || folio === "TOTAL" || folio === "TOTAL GENERAL:" || folio === "" || isNaN(parseInt(folio))) continue;
+    const folio = String(safeGet(row, folioIdx)).trim();
+    if (!folio || folio === "TOTAL" || folio.includes("TOTAL GENERAL") || folio === "" || isNaN(parseInt(folio))) continue;
 
-    const cliente = String(row[clienteIdx] || "").trim();
+    const cliente = String(safeGet(row, clienteIdx)).trim();
     if (!cliente) continue;
 
     // Clean client name - remove [CASA MATRIZ], [SUCURSAL], etc.
     const cleanCliente = cliente.replace(/\s*\[.*?\]\s*/g, "").trim();
 
-    let neto = row[netoIdx];
+    let neto = safeGet(row, netoIdx);
     if (typeof neto === "string") {
       neto = neto.replace(/\$/g, "").replace(/\./g, "").replace(/,/g, ".").trim();
       neto = parseFloat(neto) || 0;
@@ -86,42 +93,50 @@ function parseFacturacionData(rawData) {
     neto = Number(neto) || 0;
 
     let fecha = "";
-    if (fechaIdx >= 0 && row[fechaIdx]) {
-      const rawFecha = row[fechaIdx];
-      if (typeof rawFecha === "number") {
-        // Excel serial date
-        const d = new Date((rawFecha - 25569) * 86400000);
-        fecha = `${d.getDate()}/${String(d.getMonth() + 1).padStart(2, "0")}/${d.getFullYear()}`;
-      } else {
-        // Parse text date like "31 de Marzo de 2026" or "02/04/26"
-        const s = String(rawFecha).trim();
-        const meses = { enero: "01", febrero: "02", marzo: "03", abril: "04", mayo: "05", junio: "06", julio: "07", agosto: "08", septiembre: "09", octubre: "10", noviembre: "11", diciembre: "12" };
-        const match = s.match(/(\d{1,2})\s+de\s+(\w+)\s+de\s+(\d{4})/i);
-        if (match) {
-          const [, day, monthName, year] = match;
-          const mm = meses[monthName.toLowerCase()] || "01";
-          fecha = `${parseInt(day)}/${mm}/${year}`;
-        } else if (s.includes("/")) {
-          const parts = s.split("/");
-          if (parts.length === 3) {
-            let [d, m, y] = parts;
-            if (y.length === 2) y = "20" + y;
-            fecha = `${parseInt(d)}/${m.padStart(2, "0")}/${y}`;
-          }
+    if (fechaIdx >= 0) {
+      const rawFecha = safeGet(row, fechaIdx);
+      if (rawFecha) {
+        if (typeof rawFecha === "number") {
+          // Excel serial date
+          const d = new Date((rawFecha - 25569) * 86400000);
+          fecha = `${d.getDate()}/${String(d.getMonth() + 1).padStart(2, "0")}/${d.getFullYear()}`;
         } else {
-          fecha = s;
+          // Parse text date like "31 de Marzo de 2026" or "02/04/26"
+          const s = String(rawFecha).trim();
+          const meses = { enero: "01", febrero: "02", marzo: "03", abril: "04", mayo: "05", junio: "06", julio: "07", agosto: "08", septiembre: "09", octubre: "10", noviembre: "11", diciembre: "12" };
+          const match = s.match(/(\d{1,2})\s+de\s+(\w+)\s+de\s+(\d{4})/i);
+          if (match) {
+            const [, day, monthName, year] = match;
+            const mm = meses[monthName.toLowerCase()] || "01";
+            fecha = `${parseInt(day)}/${mm}/${year}`;
+          } else if (s.includes("/")) {
+            const parts = s.split("/");
+            if (parts.length === 3) {
+              let [d, m, y] = parts;
+              if (y.length === 2) y = "20" + y;
+              fecha = `${parseInt(d)}/${m.padStart(2, "0")}/${y}`;
+            }
+          } else {
+            fecha = s;
+          }
         }
       }
     }
 
     let rut = "";
-    if (rutIdx >= 0 && row[rutIdx]) {
-      rut = String(row[rutIdx]).trim();
+    if (rutIdx >= 0) {
+      const rutVal = safeGet(row, rutIdx);
+      if (rutVal) rut = String(rutVal).trim();
     }
 
     let documento = "FACTURA ELECTRONICA";
-    if (docIdx >= 0 && row[docIdx]) {
-      documento = String(row[docIdx]).toUpperCase().trim();
+    if (docIdx >= 0) {
+      const docVal = safeGet(row, docIdx);
+      if (docVal) documento = String(docVal).toUpperCase().trim();
+    }
+    // If no document type column found, try to infer from folio range or neto sign
+    if (!documento || documento === "") {
+      documento = neto < 0 ? "NOTA DE CREDITO ELECTRONICA" : "FACTURA ELECTRONICA";
     }
 
     // Format neto for Google Sheets (Chilean format with dots)
