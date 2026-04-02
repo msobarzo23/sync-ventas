@@ -13,21 +13,34 @@ const fmtF = (n) => {
   return `${n < 0 ? "-" : ""}$${Math.abs(Math.round(n)).toLocaleString("es-CL")}`;
 };
 
+function loadXLSXLibrary() {
+  return new Promise((resolve, reject) => {
+    if (window.XLSX) { resolve(window.XLSX); return; }
+    const script = document.createElement("script");
+    script.src = "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js";
+    script.onload = () => {
+      if (window.XLSX) resolve(window.XLSX);
+      else reject(new Error("No se pudo cargar la librería XLSX"));
+    };
+    script.onerror = () => reject(new Error("Error descargando librería XLSX"));
+    document.head.appendChild(script);
+  });
+}
+
 function parseXLSFile(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = async (e) => {
       try {
-        // Dynamic import of xlsx library
-        const XLSX = await import("https://cdn.jsdelivr.net/npm/xlsx@0.18.5/+esm");
+        const XLSX = await loadXLSXLibrary();
         const data = new Uint8Array(e.target.result);
         const workbook = XLSX.read(data, { type: "array" });
         const sheetName = workbook.SheetNames[0];
         const sheet = workbook.Sheets[sheetName];
-        const jsonData = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true });
+        const jsonData = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: "" });
         resolve(jsonData);
       } catch (err) {
-        reject(err);
+        reject(new Error(`Error procesando archivo: ${err.message}`));
       }
     };
     reader.onerror = () => reject(new Error("Error leyendo archivo"));
@@ -168,19 +181,25 @@ export default function App() {
   const [dragOver, setDragOver] = useState(false);
   const fileRef = useRef(null);
 
+  const [loading, setLoading] = useState(false);
+
   const handleFile = useCallback(async (file) => {
     if (!file) return;
     setError(null);
     setFileName(file.name);
+    setLoading(true);
 
     try {
       const rawData = await parseXLSFile(file);
+      if (!rawData || rawData.length === 0) throw new Error("El archivo está vacío o no se pudo leer");
       const rows = parseFacturacionData(rawData);
       if (rows.length === 0) throw new Error("No se encontraron facturas válidas en el archivo");
       setParsedRows(rows);
       setStep("preview");
     } catch (err) {
-      setError(err.message);
+      setError(err.message || "Error desconocido al procesar el archivo");
+    } finally {
+      setLoading(false);
     }
   }, []);
 
@@ -253,6 +272,13 @@ export default function App() {
 
       {/* STEP: Upload */}
       {step === "upload" && (
+        loading ? (
+          <div style={{ textAlign: "center", padding: 60 }}>
+            <div style={{ width: 44, height: 44, border: `3px solid ${C.border}`, borderTopColor: C.green, borderRadius: "50%", animation: "spin .8s linear infinite", margin: "0 auto 18px" }} />
+            <div style={{ color: C.sub, fontSize: 14 }}>Procesando archivo...</div>
+            <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+          </div>
+        ) : (
         <div
           onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
           onDragLeave={() => setDragOver(false)}
@@ -277,6 +303,7 @@ export default function App() {
             Archivos .xls o .xlsx exportados desde facturacion.cl
           </div>
         </div>
+        )
       )}
 
       {/* STEP: Preview */}
