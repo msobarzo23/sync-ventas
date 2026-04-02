@@ -200,9 +200,9 @@ function parseFacturacionData(rawData) {
       neto = -neto;
     }
 
-    // Format neto for Google Sheets (Chilean format with dots)
+    // Format for display only
     const netoFormatted = `$${Math.abs(Math.round(neto)).toLocaleString("es-CL")}`;
-    const netoFinal = neto < 0 ? `-${netoFormatted}` : netoFormatted;
+    const netoDisplay = neto < 0 ? `-${netoFormatted}` : netoFormatted;
 
     rows.push({
       documento,
@@ -211,9 +211,9 @@ function parseFacturacionData(rawData) {
       rut,
       cliente: cleanCliente,
       neto: neto,
-      netoDisplay: netoFinal,
-      // Row for Google Sheets: [DOCUMENTO, FOLIO, FECHA, RUT, RAZON SOCIAL, NETO]
-      sheetRow: [documento, folio, fecha, rut, cleanCliente, netoFinal],
+      netoDisplay: netoDisplay,
+      // Row for Google Sheets: send NETO as raw number so Sheets treats it as numeric
+      sheetRow: [documento, folio, fecha, rut, cleanCliente, Math.round(neto)],
     });
   }
 
