@@ -78,11 +78,13 @@ function parseFacturacionData(rawData) {
   const rutIdx = headers.findIndex(h => h === "RUT" || h.includes("R.U.T"));
   const clienteIdx = headers.findIndex(h => h.includes("RAZON") || h.includes("RAZÓN") || h.includes("CLIENTE"));
   const netoIdx = headers.findIndex(h => h === "NETO");
+  const exentoIdx = headers.findIndex(h => h === "EXENTO");
+  const totalIdx = headers.findIndex(h => h === "TOTAL");
   const docIdx = headers.findIndex(h => h.includes("DOCUMENTO") || h.includes("TIPO"));
 
   if (folioIdx === -1) throw new Error("No se encontró la columna FOLIO");
   if (clienteIdx === -1) throw new Error("No se encontró la columna RAZÓN SOCIAL / CLIENTE");
-  if (netoIdx === -1) throw new Error("No se encontró la columna NETO");
+  if (netoIdx === -1 && totalIdx === -1) throw new Error("No se encontró la columna NETO ni TOTAL");
 
   // Known document type section headers in facturacion.cl exports
   const DOC_TYPES = [
@@ -130,12 +132,30 @@ function parseFacturacionData(rawData) {
     // Clean client name - remove [CASA MATRIZ], [SUCURSAL], etc.
     const cleanCliente = cliente.replace(/\s*\[.*?\]\s*/g, "").trim();
 
-    let neto = safeGet(row, netoIdx);
-    if (typeof neto === "string") {
-      neto = neto.replace(/\$/g, "").replace(/\./g, "").replace(/,/g, ".").trim();
-      neto = parseFloat(neto) || 0;
+    // Parse amount - helper that handles parentheses (negative) format
+    function parseAmountCell(val) {
+      if (val === null || val === undefined || val === "") return 0;
+      if (typeof val === "number") return val;
+      let s = String(val).trim();
+      // Handle parentheses notation for negatives: (4800000) = -4800000
+      const isNegParens = s.startsWith("(") && s.endsWith(")");
+      if (isNegParens) s = s.slice(1, -1);
+      s = s.replace(/\$/g, "").replace(/\./g, "").replace(/,/g, ".").trim();
+      let num = parseFloat(s) || 0;
+      if (isNegParens && num > 0) num = -num;
+      return num;
     }
-    neto = Number(neto) || 0;
+
+    // Try NETO column first, if 0 try EXENTO, if still 0 try TOTAL
+    let neto = parseAmountCell(safeGet(row, netoIdx));
+    if (neto === 0 && exentoIdx >= 0) {
+      neto = parseAmountCell(safeGet(row, exentoIdx));
+    }
+    if (neto === 0 && totalIdx >= 0) {
+      // For total, we need to extract the neto part (total includes IVA)
+      // But if neto and exento are both 0, use total as fallback
+      neto = parseAmountCell(safeGet(row, totalIdx));
+    }
 
     let fecha = "";
     if (fechaIdx >= 0) {
